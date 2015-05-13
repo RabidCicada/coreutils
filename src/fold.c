@@ -37,19 +37,25 @@
 /* If nonzero, try to break on whitespace. */
 static bool break_spaces;
 
+/* If nonzero, try to break on whitespace. */
+static bool avoid_break;
+static char avoid_char='\0';
+static bool avoid_early = true;
+
 /* If nonzero, count bytes, not column positions. */
 static bool count_bytes;
 
 /* If nonzero, at least one of the files we read was standard input. */
 static bool have_read_stdin;
 
-static char const shortopts[] = "bsw:0::1::2::3::4::5::6::7::8::9::";
+static char const shortopts[] = "bsw:d:0::1::2::3::4::5::6::7::8::9::";
 
 static struct option const longopts[] =
 {
   {"bytes", no_argument, NULL, 'b'},
   {"spaces", no_argument, NULL, 's'},
   {"width", required_argument, NULL, 'w'},
+  {"dontbreak", required_argument, NULL, 'd'},
   {GETOPT_HELP_OPTION_DECL},
   {GETOPT_VERSION_OPTION_DECL},
   {NULL, 0, NULL, 0}
@@ -75,7 +81,9 @@ Wrap input lines in each FILE, writing to standard output.\n\
 
       fputs (_("\
   -b, --bytes         count bytes rather than columns\n\
-  -s, --spaces        break at spaces\n\
+  -s, --spaces        break at spaces.  Cannot be used with -d\n\
+  -d, --dontbreak=CHAR[+-]   avoid breaking on CHAR by breaking early(-) or \n\
+                             late(+). Cannot be used with -s\n\
   -w, --width=WIDTH   use WIDTH columns instead of 80\n\
 "), stdout);
       fputs (HELP_OPTION_DESCRIPTION, stdout);
@@ -144,9 +152,11 @@ fold_file (char const *filename, size_t width)
 
   while ((c = getc (istream)) != EOF)
     {
+      /* Get more room if our line buffer doesn't have it */
       if (offset_out + 1 >= allocated_out)
         line_out = X2REALLOC (line_out, &allocated_out);
 
+      /* If hit newline then write line out*/
       if (c == '\n')
         {
           line_out[offset_out++] = c;
@@ -196,6 +206,35 @@ fold_file (char const *filename, size_t width)
                   for (column = i = 0; i < offset_out; i++)
                     column = adjust_column (column, line_out[i]);
                   goto rescan;
+                }
+            }
+
+          if (avoid_break)
+            {
+              if (line_out[offset_out-1] == avoid_char)
+                {
+                  if (avoid_early)
+                    {
+                      /*print line and rescan to 'early' avoid the char*/
+                      fwrite (line_out, sizeof (char), (size_t) offset_out-1,
+                          stdout);
+                      putchar ('\n');
+                      line_out[0] = avoid_char;
+                      column = 0;
+                      offset_out = 1;
+                      column = adjust_column (column, avoid_char);
+                      goto rescan;
+                    }
+                  else
+                    {
+                      /*Allow overrun to 'late' avoid the char*/
+                      line_out[offset_out++] = c;
+                      fwrite (line_out, sizeof (char), (size_t) offset_out,
+                          stdout);
+                      putchar ('\n');
+                      column = offset_out = 0;
+                      continue;
+                    }
                 }
             }
 
@@ -251,7 +290,8 @@ main (int argc, char **argv)
 
   atexit (close_stdout);
 
-  break_spaces = count_bytes = have_read_stdin = false;
+  avoid_break = break_spaces = count_bytes = have_read_stdin = false;
+  avoid_early = true;
 
   while ((optc = getopt_long (argc, argv, shortopts, longopts, NULL)) != -1)
     {
@@ -265,6 +305,16 @@ main (int argc, char **argv)
 
         case 's':		/* Break at word boundaries. */
           break_spaces = true;
+          if( avoid_break )
+            error (EXIT_FAILURE, errno, "Conflicting flags provided");
+          break;
+
+        case 'd':		/* Break at word boundaries. */
+          avoid_break = true;
+          if( break_spaces )
+            error (EXIT_FAILURE, errno, "Conflicting flags provided");
+          avoid_char = optarg[0];
+          avoid_early = optarg[1]!='+';
           break;
 
         case '0': case '1': case '2': case '3': case '4':
